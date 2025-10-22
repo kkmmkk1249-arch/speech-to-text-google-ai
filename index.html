@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>محول الصوت إلى نص - Google Speech-to-Text</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Cairo', sans-serif; background: linear-gradient(135deg,#74ABE2,#5563DE); color:#fff; min-height:100vh; display:flex; align-items:center; justify-content:center; margin:0; }
+    .card { background: rgba(255,255,255,0.07); padding:28px; border-radius:14px; width:920px; max-width:95%; box-shadow:0 8px 30px rgba(0,0,0,0.25); }
+    h1 { margin:0 0 10px 0; font-size:1.6rem; }
+    p.lead { margin:0 0 18px 0; opacity:0.95; }
+    .controls { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    button { background:#fff; color:#222; border:none; padding:12px 18px; border-radius:10px; cursor:pointer; font-weight:600; }
+    button.secondary { background:transparent; color:#fff; border:1px solid rgba(255,255,255,0.2); }
+    #status { margin-left:8px; font-size:0.95rem; opacity:0.95; }
+    #transcript { margin-top:18px; background:rgba(255,255,255,0.06); padding:14px; border-radius:10px; min-height:140px; white-space:pre-wrap; overflow:auto; }
+    .small { font-size:0.9rem; opacity:0.9; }
+    .row { display:flex; gap:12px; align-items:center; margin-top:12px; }
+    .right { margin-left:auto; }
+    footer { margin-top:14px; font-size:0.85rem; opacity:0.9; }
+    a.link { color:#ffe; text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <div class="card" role="main">
+    <h1>🎤 محول الصوت إلى نص (Google Speech-to-Text)</h1>
+    <p class="lead">اضغط "ابدأ" للتسجيل، ثم اضغط "إيقاف" لإرسال الملف إلى الخادم الذي سيستدعي Google Speech-to-Text ويعيد النص.</p>
+
+    <div class="controls">
+      <button id="startBtn">🎤 ابدأ التسجيل</button>
+      <button id="stopBtn" class="secondary" disabled>⏹️ إيقاف</button>
+      <button id="copyBtn" class="secondary" disabled>📋 نسخ النص</button>
+      <div id="status" class="small">حالة: جاهز</div>
+    </div>
+
+    <div id="transcript" aria-live="polite">لم يتم تحويل أي كلام بعد...</div>
+
+    <div class="row">
+      <div class="small">ملاحظة: نسخة الاختبار تستخدم الخادم المحلي. لتحميل التطبيق على الإنترنت - راجع ملف README.</div>
+      <div class="right"><a class="link" href="README.md" target="_blank">عرض تعليمات النشر</a></div>
+    </div>
+
+    <footer>تدعم اللغة العربية (ar-SA) بشكل افتراضي. يمكنك تغيير اللغة في الملف server.js أو في المتصفح.</footer>
+  </div>
+
+  <script>
+  // Recorder using MediaRecorder to capture audio as WAV-like blob (webm/ogg may be used by browser).
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const copyBtn = document.getElementById('copyBtn');
+  const statusEl = document.getElementById('status');
+  const transcriptEl = document.getElementById('transcript');
+
+  let mediaRecorder;
+  let audioChunks = [];
+
+  function setStatus(s){
+    statusEl.textContent = 'حالة: ' + s;
+  }
+
+  startBtn.addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+      mediaRecorder.onstart = () => {
+        setStatus('التسجيل جاري...');
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        transcriptEl.textContent = 'التسجيل...';
+      };
+      mediaRecorder.start();
+    } catch (err) {
+      setStatus('خطأ في الحصول على إذن الميكروفون');
+      console.error(err);
+    }
+  });
+
+  stopBtn.addEventListener('click', async () => {
+    if (!mediaRecorder) return;
+    mediaRecorder.onstop = async () => {
+      setStatus('يتم تجهيز الصوت وإرساله...');
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+
+      const blob = new Blob(audioChunks, { type: audioChunks[0]?.type || 'audio/webm' });
+      // convert to base64
+      const base64 = await blobToBase64(blob);
+      // send to backend
+      try {
+        const resp = await fetch('/speech-to-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audio: base64.split(',')[1], mimeType: blob.type })
+        });
+        if (!resp.ok) throw new Error('Server error: ' + resp.status);
+        const data = await resp.json();
+        transcriptEl.textContent = data.text || '[لم يتم التعرف على نص]';
+        copyBtn.disabled = false;
+        setStatus('اكتمل التحويل');
+      } catch (err) {
+        console.error(err);
+        setStatus('حدث خطأ أثناء الإرسال');
+        transcriptEl.textContent = '⚠️ خطأ: ' + err.message;
+      }
+    };
+    mediaRecorder.stop();
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(transcriptEl.textContent);
+      setStatus('النص نُسخ إلى الحافظة');
+    } catch (e) {
+      setStatus('فشل نسخ النص');
+    }
+  });
+
+  function blobToBase64(blob){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+  </script>
+</body>
+</html>
